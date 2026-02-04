@@ -694,12 +694,22 @@ This will be used as a reference for animation consistency."""
                 # Calculate frame boundaries from separators
                 frame_bounds = []
                 prev_end = 0
+                min_frame_width = config.frame_size // 2  # Frames must be at least half target size
+
                 for sep_start, sep_end in separators:
-                    if sep_start > prev_end + 10:
+                    frame_width = sep_start - prev_end
+                    if frame_width >= min_frame_width:
                         frame_bounds.append((prev_end, sep_start))
+                    elif frame_width > 10:
+                        print(f"        Skipping narrow region ({frame_width}px wide)")
                     prev_end = sep_end + 1
-                if prev_end < raw_output.width - 10:
+
+                # Add final frame after last separator
+                final_width = raw_output.width - prev_end
+                if final_width >= min_frame_width:
                     frame_bounds.append((prev_end, raw_output.width))
+
+                print(f"        Valid frame regions: {len(frame_bounds)}")
 
                 # Detect row split
                 row_split = self.detect_row_split(raw_output)
@@ -710,8 +720,12 @@ This will be used as a reference for animation consistency."""
                 sprites = []
                 max_width = 0
                 max_height = 0
+                min_sprite_area = config.frame_size * config.frame_size * 0.05  # Min 5% of frame area
 
-                for x_start, x_end in frame_bounds[:config.frame_count]:
+                for x_start, x_end in frame_bounds[:config.frame_count + 2]:  # Check extra frames
+                    if len(sprites) >= config.frame_count:
+                        break
+
                     frame_region = raw_output.crop((x_start, 0, x_end, row_split))
                     frame_clean = self.remove_background(frame_region, config)
 
@@ -730,15 +744,23 @@ This will be used as a reference for animation consistency."""
 
                             # Crop to content
                             sprite = frame_clean.crop((left, top, right, bottom))
+
+                            # Validate sprite has enough content
+                            sprite_area = sprite.width * sprite.height
+                            if sprite_area < min_sprite_area:
+                                print(f"        Skipping tiny frame ({sprite.width}x{sprite.height})")
+                                continue
+
                             sprites.append(sprite)
                             max_width = max(max_width, sprite.width)
                             max_height = max(max_height, sprite.height)
                             continue
 
-                    # Fallback
-                    sprites.append(frame_clean)
-                    max_width = max(max_width, frame_clean.width)
-                    max_height = max(max_height, frame_clean.height)
+                    # Skip frames with no content
+                    print(f"        Skipping empty frame")
+
+                if len(sprites) < config.frame_count:
+                    print(f"        Warning: only extracted {len(sprites)}/{config.frame_count} valid sprites")
 
                 # Calculate uniform scale based on largest sprite
                 uniform_scale = min(config.frame_size / max_width,
