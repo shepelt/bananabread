@@ -1,0 +1,23 @@
+[project]
+name = "bananabread"
+version = "0.1.0"
+description = "AI-powered sprite sheet generator using Google Gemini (Nano Banana)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "Pillow>=10.0.0",
+    "numpy>=1.24.0",
+    "opencv-python>=4.8.0",
+    "rembg[cpu]>=2.0.50",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+gpu = ["rembg[gpu]>=2.0.50"]
+
+[project.scripts]
+bananabread = "sprite_generator:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
