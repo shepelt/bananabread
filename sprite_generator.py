@@ -15,6 +15,10 @@ import numpy as np
 import cv2
 from dataclasses import dataclass
 from typing import List, Tuple
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ML-based background removal
 try:
@@ -219,27 +223,27 @@ Be strict - only score 8+ if the sprite sheet is production-ready for a game."""
             frame_descs = frame_descs + frame_descs
         frame_descs = frame_descs[:config.frame_count]
 
-        frame_details = ", ".join([f"Frame {i+1}: {desc}" for i, desc in enumerate(frame_descs)])
+        # Build explicit per-frame instructions
+        frame_lines = []
+        for i, desc in enumerate(frame_descs):
+            frame_lines.append(f"  Frame {i+1}: {desc} (facing RIGHT)")
+        frame_details = "\n".join(frame_lines)
 
-        prompt = f"""Game Asset. Pixel art sprite sheet with {config.frame_count} SEPARATE frames.
+        prompt = f"""Pixel art sprite sheet: {config.frame_count} animation frames in a HORIZONTAL ROW.
 
-CRITICAL: The template image has MAGENTA (#FF00FF) vertical lines separating the frames.
-You MUST keep these magenta separator lines in your output.
-Each character MUST stay INSIDE their frame - do NOT cross the magenta lines.
+CHARACTER: {config.character}
+ANIMATION: {config.animation}
 
-Character: {config.character}
-
-Animation: {config.animation} animation
+FRAME SEQUENCE (left to right):
 {frame_details}
 
-Technical requirements:
-- {config.frame_count} frames in a SINGLE HORIZONTAL ROW
-- KEEP the magenta (#FF00FF) separator lines between frames
-- WHITE background within each frame
-- Each sprite stays INSIDE its frame boundary
-- Side view, facing RIGHT
-- Consistent character design across ALL frames
-- Clear pixel art style"""
+CRITICAL RULES:
+1. MAGENTA (#FF00FF) separator lines between frames - KEEP THEM
+2. ALL {config.frame_count} frames must face RIGHT (same direction)
+3. SAME character in every frame - consistent design, colors, proportions
+4. WHITE background in each frame
+5. Each sprite INSIDE its frame boundary - no overlapping
+6. Single horizontal row only - no stacking"""
 
         return prompt
 
@@ -270,7 +274,21 @@ Technical requirements:
 
         parts.append({"text": prompt})
 
+        # System instruction for consistent sprite generation
+        system_instruction = """You are a pixel art sprite sheet generator for 2D games.
+
+STRICT RULES:
+- Generate sprites in a SINGLE HORIZONTAL ROW
+- Preserve MAGENTA (#FF00FF) separator lines from the template
+- ALL sprites must face the SAME direction (RIGHT)
+- Keep character design CONSISTENT across all frames
+- WHITE background only
+- Never stack frames vertically"""
+
         payload = {
+            "system_instruction": {
+                "parts": [{"text": system_instruction}]
+            },
             "contents": [{
                 "parts": parts
             }]
@@ -653,6 +671,11 @@ This will be used as a reference for animation consistency."""
             raw_output = self.call_api(template, prompt, reference)
             print(f"        Raw output: {raw_output.width}x{raw_output.height}")
 
+            # Save raw output for debugging
+            raw_path = os.path.join(self.output_dir, f"{name}_raw_attempt{attempt+1}.png")
+            raw_output.save(raw_path)
+            print(f"        Saved raw: {raw_path}")
+
             # Step 4: Smart segmentation using magenta separators
             print("  [4/6] Segmenting frames...")
 
@@ -683,8 +706,11 @@ This will be used as a reference for animation consistency."""
                 if row_split < raw_output.height:
                     print(f"        Detected row split at y={row_split}, using top row")
 
-                # Extract frames with aspect-ratio preservation
-                frames = []
+                # First pass: extract sprites and find uniform scale
+                sprites = []
+                max_width = 0
+                max_height = 0
+
                 for x_start, x_end in frame_bounds[:config.frame_count]:
                     frame_region = raw_output.crop((x_start, 0, x_end, row_split))
                     frame_clean = self.remove_background(frame_region, config)
@@ -704,28 +730,34 @@ This will be used as a reference for animation consistency."""
 
                             # Crop to content
                             sprite = frame_clean.crop((left, top, right, bottom))
-
-                            # Scale to fit target while preserving aspect ratio
-                            scale = min(config.frame_size / sprite.width,
-                                       config.frame_size / sprite.height) * 0.9
-                            new_w = max(1, int(sprite.width * scale))
-                            new_h = max(1, int(sprite.height * scale))
-                            sprite_scaled = sprite.resize((new_w, new_h), Image.Resampling.NEAREST)
-
-                            # Center in target frame
-                            final_frame = Image.new('RGBA', (config.frame_size, config.frame_size), (0, 0, 0, 0))
-                            paste_x = (config.frame_size - new_w) // 2
-                            paste_y = (config.frame_size - new_h) // 2
-                            final_frame.paste(sprite_scaled, (paste_x, paste_y), sprite_scaled)
-                            frames.append(final_frame)
+                            sprites.append(sprite)
+                            max_width = max(max_width, sprite.width)
+                            max_height = max(max_height, sprite.height)
                             continue
 
-                    # Fallback: simple resize (shouldn't normally reach here)
-                    frame_resized = frame_clean.resize(
-                        (config.frame_size, config.frame_size),
-                        Image.Resampling.NEAREST
-                    )
-                    frames.append(frame_resized)
+                    # Fallback
+                    sprites.append(frame_clean)
+                    max_width = max(max_width, frame_clean.width)
+                    max_height = max(max_height, frame_clean.height)
+
+                # Calculate uniform scale based on largest sprite
+                uniform_scale = min(config.frame_size / max_width,
+                                   config.frame_size / max_height) * 0.9
+                print(f"        Uniform scale: {uniform_scale:.2f} (max sprite: {max_width}x{max_height})")
+
+                # Second pass: apply uniform scale to all sprites
+                frames = []
+                for sprite in sprites:
+                    new_w = max(1, int(sprite.width * uniform_scale))
+                    new_h = max(1, int(sprite.height * uniform_scale))
+                    sprite_scaled = sprite.resize((new_w, new_h), Image.Resampling.NEAREST)
+
+                    # Center in target frame (align to bottom for ground contact)
+                    final_frame = Image.new('RGBA', (config.frame_size, config.frame_size), (0, 0, 0, 0))
+                    paste_x = (config.frame_size - new_w) // 2
+                    paste_y = config.frame_size - new_h - 2  # Align to bottom with small margin
+                    final_frame.paste(sprite_scaled, (paste_x, paste_y), sprite_scaled)
+                    frames.append(final_frame)
             else:
                 # Fallback to original approach
                 print("        No separators found, using fallback segmentation")
@@ -822,7 +854,8 @@ This will be used as a reference for animation consistency."""
 
 def main():
     parser = argparse.ArgumentParser(description="Generate game sprite sheets using AI")
-    parser.add_argument("--api-key", required=True, help="Google Gemini API key")
+    parser.add_argument("--api-key", default=os.getenv("GEMINI_API_KEY"),
+                        help="Google Gemini API key (or set GEMINI_API_KEY in .env)")
     parser.add_argument("--character", required=True, help="Character description")
     parser.add_argument("--name", required=True, help="Output name for the sprite")
     parser.add_argument("--output", default="./output", help="Output directory")
@@ -846,6 +879,9 @@ def main():
                         help="Background color for chromakey")
 
     args = parser.parse_args()
+
+    if not args.api_key:
+        parser.error("API key required: use --api-key or set GEMINI_API_KEY in .env file")
 
     generator = SpriteGenerator(args.api_key, args.output)
 
